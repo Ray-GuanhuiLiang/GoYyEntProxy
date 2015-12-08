@@ -5,6 +5,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
+	"os/signal"
 	"sync"
 	"time"
 )
@@ -28,17 +30,12 @@ func NewServer(addr string) (*Server, error) {
 func (this *Server) Start() {
 	this.wg.Add(1)
 	go func() {
+		defer this.wg.Done()
 		for {
 			conn, err := this.ls.Accept()
-			if err != nil {
-				log.Println("Accept error:", err)
-				if conn != nil {
-					conn.Close()
-				}
-			}
-			log.Println("Accept conn:", conn)
 			select {
 			case <-this.quiting:
+				log.Println("Quit accept loop.")
 				if conn != nil {
 					conn.Close()
 				}
@@ -46,6 +43,13 @@ func (this *Server) Start() {
 			default:
 				//
 			}
+			if err != nil {
+				log.Println("Accept error:", err)
+				if conn != nil {
+					conn.Close()
+				}
+			}
+			log.Println("Accept conn:", conn)
 			if conn != nil {
 				this.wg.Add(1)
 				go this.handleClient(conn)
@@ -68,6 +72,23 @@ func (this *Server) handleClient(client net.Conn) {
 	defer func() {
 		for _, conn := range connMap {
 			conn.Close()
+		}
+	}()
+
+	qch := make(chan interface{})
+	defer close(qch)
+	go func() {
+		for {
+			select {
+			case <-qch:
+				return
+			case <-this.quiting:
+				client.Close()
+				for _, conn := range connMap {
+					conn.Close()
+				}
+				return
+			}
 		}
 	}()
 
@@ -183,11 +204,20 @@ func (this *Server) Shutdown() {
 }
 
 func main() {
+	quit := make(chan os.Signal)
+	signal.Notify(quit, os.Kill, os.Interrupt)
+
 	srv, err := NewServer(":1234")
 	if err != nil {
 		log.Fatal("Can not create server:", err)
 		return
 	}
 	srv.Start()
+
+	go func() {
+		<-quit
+		log.Println("Recv quit signal")
+		srv.Shutdown()
+	}()
 	srv.Wait()
 }
