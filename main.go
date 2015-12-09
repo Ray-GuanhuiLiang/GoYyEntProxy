@@ -18,16 +18,18 @@ type Server struct {
 	quiting chan interface{}
 	wg      sync.WaitGroup
 	ls      net.Listener
+	conf    *Config
 }
 
-func NewServer(addr string) (*Server, error) {
+func NewServer(conf *Config) (*Server, error) {
 	q := make(chan interface{})
-	ls, err := net.Listen("tcp", addr)
+	ls, err := net.Listen("tcp", conf.Server.Bind)
 	if err != nil {
 		close(q)
 		return nil, err
 	}
-	return &Server{ls: ls, quiting: q}, nil
+	log.Println("Create server", conf.Server.Bind)
+	return &Server{ls: ls, quiting: q, conf: conf}, nil
 }
 
 func (this *Server) Start() {
@@ -61,9 +63,30 @@ func (this *Server) Start() {
 	}()
 }
 
-func getRealServerAddr(uri int64) string {
-	//TODO: 根据不同的uri返回不同的目的服务IP端口
-	return "127.0.0.1:3770"
+func (this *Server) getRealServerAddr(uri int64) (redir string) {
+	major := uint8(uri % 256)
+	minor := uint32(uri / 256)
+	defer func() {
+		log.Printf("major %d minor %d redir %s\n", major, minor, redir)
+	}()
+
+	// 第一次循环搜索完全匹配大类和小类的
+	for _, sc := range this.conf.Proxy.Specific {
+		if major == sc.Major && minor == sc.Minor {
+			redir = sc.Redir
+			return
+		}
+	}
+	// 第二次循环搜索完全匹配大类，小类没有设置的
+	for _, sc := range this.conf.Proxy.Specific {
+		if major == sc.Major && sc.Minor == 0 {
+			redir = sc.Redir
+			return
+		}
+	}
+	// 返回默认值
+	redir = this.conf.Proxy.Default
+	return
 }
 
 func (this *Server) handleClient(client net.Conn) {
@@ -71,10 +94,11 @@ func (this *Server) handleClient(client net.Conn) {
 	defer client.Close()
 
 	connMap := make(map[string]net.Conn)
-	buf := make([]byte, 1024)
+	buf := make([]byte, 8)
 
 	defer func() {
 		for _, conn := range connMap {
+			log.Println("close remote connect", conn.RemoteAddr())
 			conn.Close()
 		}
 	}()
@@ -108,7 +132,7 @@ func (this *Server) handleClient(client net.Conn) {
 	}
 }
 
-func (*Server) copyFromClientToRemote(connMap map[string]net.Conn, buf []byte, client net.Conn) (net.Conn, error) {
+func (this *Server) copyFromClientToRemote(connMap map[string]net.Conn, buf []byte, client net.Conn) (net.Conn, error) {
 
 	_, err := io.ReadFull(client, buf[:4])
 	if err != nil {
@@ -129,12 +153,12 @@ func (*Server) copyFromClientToRemote(connMap map[string]net.Conn, buf []byte, c
 	}
 	uri := byte2int64(buf[4:8])
 	log.Println("Req uri", uri)
-	addr := getRealServerAddr(uri)
+	addr := this.getRealServerAddr(uri)
 	log.Println("Remote addr", addr)
 
 	c, ok := connMap[addr]
 	if !ok {
-		c, err = net.DialTimeout("tcp", addr, time.Duration(5)*time.Second)
+		c, err = net.DialTimeout("tcp", addr, time.Duration(this.conf.Proxy.ConnectTimeout)*time.Millisecond)
 		if err != nil {
 			log.Printf("Can not connect remote: %s, %s\n", addr, err)
 			return nil, err
@@ -206,10 +230,15 @@ func (this *Server) Shutdown() {
 }
 
 func main() {
+	conf, err := NewConfig("app.yaml")
+	if err != nil {
+		log.Fatal("Can not load config", err)
+		return
+	}
 	quit := make(chan os.Signal)
 	signal.Notify(quit, os.Kill, os.Interrupt)
 
-	srv, err := NewServer(":1234")
+	srv, err := NewServer(conf)
 	if err != nil {
 		log.Fatal("Can not create server:", err)
 		return

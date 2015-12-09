@@ -1,0 +1,21 @@
+server:
+  #绑定的IP
+  bind: 127.0.0.1:1234
+
+proxy:
+  #连接proxy的超时时间（毫秒）
+  connecttimeout: 3000
+
+  #默认的转发
+  default: 192.168.1.1:3770
+  
+  #定制的转发（如果只有major，表示这个大类的都转发到制定ip，如果有major和minor，表示符合大类和小类的才转发）
+  specific:
+    - major: 124
+      redir: 192.168.1.2:3770
+    - major: 213
+      minor: 39
+      redir: 192.168.1.3:3770
+    - major: 126
+      minor: 252
+      redir: 192.168.1.4:3770
