@@ -1,1 +1,5 @@
-# GoYyEntProxy
+#GoYyEntProxy
+
+GoYyEntProxy服务是用于解决在开发联调时把某些EntProxy的接口转发到特定的服务器。
+
+这个问题产生的原因主要是由于目前Daemon是全局配置的，修改了特定的uri指向的进程名会影响到其他的测试人员。

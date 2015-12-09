@@ -1,3 +1,6 @@
+// GoYyEntProxy服务是用于解决在开发联调时把某些EntProxy的接口转发到特定的服务器。
+// 这个问题产生的原因主要是由于目前Daemon是全局配置的，修改了特定的uri指向的进程名会影响到其他的测试人员。
+
 package main
 
 import (
@@ -58,7 +61,8 @@ func (this *Server) Start() {
 	}()
 }
 
-func getRealServerAddr(uri uint32) string {
+func getRealServerAddr(uri int64) string {
+	//TODO: 根据不同的uri返回不同的目的服务IP端口
 	return "127.0.0.1:3770"
 }
 
@@ -111,7 +115,8 @@ func (*Server) copyFromClientToRemote(connMap map[string]net.Conn, buf []byte, c
 		log.Println("read client error:", err)
 		return nil, err
 	}
-	reqLen := byte2uint32(buf[:4])
+	reqLen := byte2int64(buf[:4])
+	log.Println("Req len", reqLen)
 	if reqLen < 8 {
 		log.Println("incorrect reqlen:", reqLen)
 		return nil, errors.New("incorrect reqlen")
@@ -122,30 +127,35 @@ func (*Server) copyFromClientToRemote(connMap map[string]net.Conn, buf []byte, c
 		log.Println("read client error:", err)
 		return nil, err
 	}
-	uri := byte2uint32(buf[4:8])
+	uri := byte2int64(buf[4:8])
+	log.Println("Req uri", uri)
 	addr := getRealServerAddr(uri)
+	log.Println("Remote addr", addr)
 
 	c, ok := connMap[addr]
 	if !ok {
-		c, err = net.DialTimeout("tcp", addr, time.Second)
+		c, err = net.DialTimeout("tcp", addr, time.Duration(5)*time.Second)
 		if err != nil {
-			log.Println("Can not connect remote: %s, %s", addr, err)
+			log.Printf("Can not connect remote: %s, %s\n", addr, err)
 			return nil, err
 		}
+		log.Println("Connected to remote", addr, c)
 		connMap[addr] = c
 	}
 
-	writeFull(c, buf[:8])
-	remained := reqLen - uint32(8)
-	for remained <= 0 {
-		n, err := client.Read(buf)
-		if err != nil {
-			log.Println("Read error:", err)
-			return c, err
-		}
-		writeFull(c, buf[:n])
-		remained -= uint32(n)
+	_, err = c.Write(buf[:8])
+	if err != nil {
+		log.Println("Can not write to remote:", err)
+		return nil, err
 	}
+	remained := reqLen - 8
+	log.Println("read from client remaind", remained)
+	copied, err := io.CopyN(c, client, remained)
+	if err != nil {
+		log.Println("Can not copy data from client to remote:", err)
+		return nil, err
+	}
+	log.Println("finish copy from client to remote", copied)
 
 	return c, nil
 }
@@ -156,42 +166,34 @@ func (*Server) copyFromRemoteToClient(buf []byte, remote net.Conn, client net.Co
 		log.Println("read remote error:", err)
 		return err
 	}
-	respLen := byte2uint32(buf[:4])
+	respLen := byte2int64(buf[:4])
+	log.Println("resp len", respLen)
 	if respLen < 4 {
 		log.Println("incorrect respLen:", respLen)
 		return errors.New("incorrect respLen")
 	}
 
-	writeFull(client, buf[:4])
-	remained := respLen - uint32(4)
-	for remained <= 0 {
-		n, err := remote.Read(buf)
-		if err != nil {
-			log.Println("Read error:", err)
-			return err
-		}
-		writeFull(client, buf[:n])
-		remained -= uint32(n)
+	_, err = client.Write(buf[:4])
+	if err != nil {
+		log.Println("Can not write to client:", err)
+		return err
 	}
 
-	return nil
-}
+	remained := respLen - 4
+	copied, err := io.CopyN(client, remote, remained)
+	log.Println("finish copy from remote to client", copied)
 
-func byte2uint32(in []byte) uint32 {
-	return 0
-}
-
-func writeFull(w io.Writer, in []byte) error {
-	var writed int
-	total := len(in)
-	for writed >= total {
-		n, err := w.Write(in[writed:])
-		if err != nil {
-			return err
-		}
-		writed += n
+	if copied == remained {
+		return nil
 	}
-	return nil
+	if err != nil {
+		return err
+	}
+	return errors.New("Unexpcect EOF from remote")
+}
+
+func byte2int64(in []byte) int64 {
+	return int64(in[0]) + int64(in[1])<<8 + int64(in[2])<<16 + int64(in[3])<<24
 }
 
 func (this *Server) Wait() {
